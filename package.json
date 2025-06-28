@@ -2,11 +2,12 @@
     "name": "cab-request-system",
     "version": "1.0.0",
     "description": "Cab request system with user and admin roles",
-    "main": "./server/index.js",
-    "scripts": {
-        "start": "node ./server/index.js",
-        "dev": "./nodemon ./server/index.js"
-    },
+    "main": "index.js",
+"scripts": {
+  "start": "node index.js",
+  "dev": "nodemon index.js"
+},
+
     "dependencies": {
         "@tailwindcss/vite": "^4.1.10",
         "bcrypt": "^5.1.1",
