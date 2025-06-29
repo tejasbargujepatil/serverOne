@@ -122,24 +122,45 @@
 //             return res.status(404).json({ message: 'Ride request not found or not in PENDING status' });
 //         }
 //         const driverCheck = await pool.query(
-//             'SELECT * FROM drivers WHERE id = $1 AND available = $2',
-//             [driver_id, true]
+//             'SELECT * FROM drivers WHERE id = $1',
+//             [driver_id]
 //         );
 //         if (driverCheck.rows.length === 0) {
-//             return res.status(404).json({ message: 'Driver not found or not available' });
+//             return res.status(404).json({ message: 'Driver not found' });
 //         }
 //         await pool.query('BEGIN');
 //         const updateRequest = await pool.query(
 //             'UPDATE cab_requests SET driver_id = $1, status = $2, updated_at = NOW() WHERE id = $3 RETURNING *',
 //             [driver_id, 'CONFIRMED', id]
 //         );
-//         await pool.query('UPDATE drivers SET available = $1, updated_at = NOW() WHERE id = $2', [false, driver_id]);
 //         await pool.query('COMMIT');
 //         res.json({ data: updateRequest.rows[0], message: 'Driver assigned successfully' });
 //     } catch (error) {
 //         await pool.query('ROLLBACK');
 //         console.error('Error assigning driver:', error.stack);
 //         res.status(500).json({ message: 'Error assigning driver', error: error.message });
+//     }
+// });
+
+// // Get all requests assigned to a driver
+// router.get('/drivers/:id/requests', authenticate('admin'), async (req, res) => {
+//     const { id } = req.params;
+//     try {
+//         if (!validator.isInt(id)) {
+//             return res.status(400).json({ message: 'Invalid driver ID' });
+//         }
+//         const result = await pool.query(`
+//             SELECT r.id, r.user_id, r.driver_id, r.pickup_location, r.dropoff_location, r.status, r.fare_amount,
+//                    r.created_at, u.name AS user_name, u.gender AS user_gender
+//             FROM cab_requests r
+//             LEFT JOIN users u ON r.user_id = u.id
+//             WHERE r.driver_id = $1
+//             ORDER BY r.created_at DESC
+//         `, [id]);
+//         res.json({ data: result.rows, message: 'Driver requests fetched successfully' });
+//     } catch (error) {
+//         console.error('Error fetching driver requests:', error.stack);
+//         res.status(500).json({ message: 'Error fetching driver requests', error: error.message });
 //     }
 // });
 
@@ -630,6 +651,8 @@
 // });
 
 // module.exports = router;
+
+
 const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcrypt');
@@ -655,7 +678,6 @@ router.post('/login', async (req, res) => {
         if (!admin) {
             return res.status(401).json({ message: 'Invalid username or password' });
         }
-        // Check if password is a valid bcrypt hash
         if (!admin.password || !admin.password.startsWith('$2b$')) {
             console.error(`Invalid password hash for admin ${admin.id}`);
             return res.status(500).json({ message: 'Invalid server data' });
@@ -695,8 +717,8 @@ router.get('/requests', authenticate('admin'), async (req, res) => {
     try {
         const result = await pool.query(`
             SELECT r.id, r.user_id, r.driver_id, r.pickup_location, r.dropoff_location, r.status, r.fare_amount,
-                   r.created_at, u.name AS user_name, u.gender AS user_gender,
-                   d.name AS driver_name
+                   r.created_at, COALESCE(u.username, 'Unknown') AS user_name, u.gender AS user_gender,
+                   COALESCE(d.name, 'Not assigned') AS driver_name
             FROM cab_requests r
             LEFT JOIN users u ON r.user_id = u.id
             LEFT JOIN drivers d ON r.driver_id = d.id
@@ -718,8 +740,8 @@ router.get('/requests/:id', authenticate('admin'), async (req, res) => {
         }
         const result = await pool.query(`
             SELECT r.id, r.user_id, r.driver_id, r.pickup_location, r.dropoff_location, r.status, r.fare_amount,
-                   r.created_at, u.name AS user_name, u.gender AS user_gender,
-                   d.name AS driver_name
+                   r.created_at, COALESCE(u.username, 'Unknown') AS user_name, u.gender AS user_gender,
+                   COALESCE(d.name, 'Not assigned') AS driver_name
             FROM cab_requests r
             LEFT JOIN users u ON r.user_id = u.id
             LEFT JOIN drivers d ON r.driver_id = d.id
@@ -735,42 +757,109 @@ router.get('/requests/:id', authenticate('admin'), async (req, res) => {
     }
 });
 
-// Assign driver to ride request
+// Assign driver to ride request - UPDATED TO ALLOW MULTIPLE REQUESTS
 router.put('/requests/:id/assign', authenticate('admin'), async (req, res) => {
     const { driver_id } = req.body;
     const { id } = req.params;
+    const client = await pool.connect();
+    
     try {
-        if (!validator.isInt(id) || !validator.isInt(driver_id)) {
-            return res.status(400).json({ message: 'Invalid request ID or driver ID' });
+        await client.query('BEGIN');
+
+        // Validate inputs
+        if (!id || !validator.isInt(id)) {
+            throw new Error('Invalid request ID');
         }
-        if (!driver_id) {
-            return res.status(400).json({ message: 'Driver ID is required' });
+        if (!driver_id || !validator.isInt(driver_id.toString())) {
+            throw new Error('Invalid driver ID');
         }
-        const requestCheck = await pool.query(
-            'SELECT * FROM cab_requests WHERE id = $1 AND status = $2',
-            [id, 'PENDING']
+
+        // Check if request exists and is in PENDING status
+        const requestCheck = await client.query(
+            'SELECT id, status, driver_id FROM cab_requests WHERE id = $1 FOR UPDATE',
+            [id]
         );
+        
         if (requestCheck.rows.length === 0) {
-            return res.status(404).json({ message: 'Ride request not found or not in PENDING status' });
+            throw new Error('Ride request not found');
         }
-        const driverCheck = await pool.query(
-            'SELECT * FROM drivers WHERE id = $1',
+        
+        const request = requestCheck.rows[0];
+        
+        if (request.status !== 'PENDING') {
+            throw new Error(`Cannot assign driver to request with status: ${request.status}`);
+        }
+
+        if (request.driver_id !== null) {
+            throw new Error('Request already has a driver assigned');
+        }
+
+        // Check if driver exists and is available
+        const driverCheck = await client.query(
+            'SELECT id, name, vehicle_type, vehicle_number, available FROM drivers WHERE id = $1 FOR UPDATE',
             [driver_id]
         );
+        
         if (driverCheck.rows.length === 0) {
-            return res.status(404).json({ message: 'Driver not found' });
+            throw new Error('Driver not found');
         }
-        await pool.query('BEGIN');
-        const updateRequest = await pool.query(
+        
+        const driver = driverCheck.rows[0];
+        
+        if (!driver.available) {
+            throw new Error('Driver is not available');
+        }
+
+        // Update the request and driver
+        const updateRequest = await client.query(
             'UPDATE cab_requests SET driver_id = $1, status = $2, updated_at = NOW() WHERE id = $3 RETURNING *',
             [driver_id, 'CONFIRMED', id]
         );
-        await pool.query('COMMIT');
-        res.json({ data: updateRequest.rows[0], message: 'Driver assigned successfully' });
+        
+        // Update driver availability (optional, depending on your requirements)
+        await client.query(
+            'UPDATE drivers SET available = false WHERE id = $1',
+            [driver_id]
+        );
+
+        await client.query('COMMIT');
+        
+        res.json({ 
+            data: updateRequest.rows[0], 
+            message: 'Driver assigned successfully',
+            driver: {
+                id: driver.id,
+                name: driver.name,
+                vehicle: `${driver.vehicle_type} (${driver.vehicle_number})`
+            }
+        });
     } catch (error) {
-        await pool.query('ROLLBACK');
-        console.error('Error assigning driver:', error.stack);
-        res.status(500).json({ message: 'Error assigning driver', error: error.message });
+        await client.query('ROLLBACK');
+        console.error('Error assigning driver:', {
+            error: error.message,
+            stack: error.stack,
+            requestId: id,
+            driverId: driver_id
+        });
+        
+        let statusCode = 500;
+        let message = 'Error assigning driver';
+        
+        if (error.message.includes('Invalid') || 
+            error.message.includes('not found') || 
+            error.message.includes('not available') ||
+            error.message.includes('Cannot assign') ||
+            error.message.includes('already assigned')) {
+            statusCode = 400;
+            message = error.message;
+        }
+        
+        res.status(statusCode).json({ 
+            message,
+            error: error.message 
+        });
+    } finally {
+        client.release();
     }
 });
 
@@ -783,7 +872,7 @@ router.get('/drivers/:id/requests', authenticate('admin'), async (req, res) => {
         }
         const result = await pool.query(`
             SELECT r.id, r.user_id, r.driver_id, r.pickup_location, r.dropoff_location, r.status, r.fare_amount,
-                   r.created_at, u.name AS user_name, u.gender AS user_gender
+                   r.created_at, COALESCE(u.username, 'Unknown') AS user_name, u.gender AS user_gender
             FROM cab_requests r
             LEFT JOIN users u ON r.user_id = u.id
             WHERE r.driver_id = $1
@@ -957,7 +1046,7 @@ router.delete('/drivers/:id', authenticate('admin'), async (req, res) => {
 router.get('/users', authenticate('admin'), async (req, res) => {
     try {
         const result = await pool.query(
-            'SELECT id, name, email, phone, gender, created_at FROM users ORDER BY created_at DESC'
+            'SELECT id, username, email, phone, gender, created_at FROM users ORDER BY created_at DESC'
         );
         res.json({ data: result.rows, message: 'Users fetched successfully' });
     } catch (error) {
@@ -973,7 +1062,7 @@ router.get('/users/:id', authenticate('admin'), async (req, res) => {
             return res.status(400).json({ message: 'Invalid user ID' });
         }
         const result = await pool.query(
-            'SELECT id, name, email, phone, gender, created_at FROM users WHERE id = $1',
+            'SELECT id, username, email, phone, gender, created_at FROM users WHERE id = $1',
             [id]
         );
         if (result.rows.length === 0) {
@@ -1014,7 +1103,7 @@ router.get('/analytics', authenticate('admin'), async (req, res) => {
             LIMIT 30
         `);
         const drivers = await pool.query(`
-            SELECT d.name, COUNT(r.id) AS trips, SUM(r.fare_amount) AS earnings
+            SELECT d.id, d.name, COUNT(r.id) AS trips, SUM(r.fare_amount) AS earnings
             FROM drivers d
             LEFT JOIN cab_requests r ON d.id = r.driver_id AND r.status = 'COMPLETED'
             GROUP BY d.id, d.name
@@ -1039,7 +1128,7 @@ router.get('/live-tracking', authenticate('admin'), async (req, res) => {
     try {
         const result = await pool.query(`
             SELECT r.id, r.user_id, r.driver_id, r.status, r.current_location,
-                   u.name AS user_name, d.name AS driver_name
+                   COALESCE(u.username, 'Unknown') AS user_name, COALESCE(d.name, 'Not assigned') AS driver_name
             FROM cab_requests r
             LEFT JOIN users u ON r.user_id = u.id
             LEFT JOIN drivers d ON r.driver_id = d.id
@@ -1119,8 +1208,8 @@ router.put('/settings/system', authenticate('admin'), async (req, res) => {
 router.get('/requests/export', authenticate('admin'), async (req, res) => {
     try {
         const result = await pool.query(`
-            SELECT r.id, r.user_id, u.name AS user_name, r.pickup_location, r.dropoff_location,
-                   d.name AS driver_name, r.status, r.fare_amount, r.created_at
+            SELECT r.id, r.user_id, COALESCE(u.username, 'Unknown') AS user_name, r.pickup_location, r.dropoff_location,
+                   COALESCE(d.name, 'Not assigned') AS driver_name, r.status, r.fare_amount, r.created_at
             FROM cab_requests r
             LEFT JOIN users u ON r.user_id = u.id
             LEFT JOIN drivers d ON r.driver_id = d.id
@@ -1141,9 +1230,9 @@ router.get('/requests/export', authenticate('admin'), async (req, res) => {
 router.get('/users/export', authenticate('admin'), async (req, res) => {
     try {
         const result = await pool.query(
-            'SELECT id, name, email, phone, gender, created_at FROM users ORDER BY created_at DESC'
+            'SELECT id, username, email, phone, gender, created_at FROM users ORDER BY created_at DESC'
         );
-        const fields = ['id', 'name', 'email', 'phone', 'gender', 'created_at'];
+        const fields = ['id', 'username', 'email', 'phone', 'gender', 'created_at'];
         const parser = new Parser({ fields });
         const csv = parser.parse(result.rows);
         res.header('Content-Type', 'text/csv');
@@ -1157,7 +1246,6 @@ router.get('/users/export', authenticate('admin'), async (req, res) => {
 
 router.get('/dashboard/export', authenticate('admin'), async (req, res) => {
     try {
-        // Fetch summary stats
         const summaryStats = await pool.query(`
             SELECT 
                 COUNT(*) AS total_rides,
@@ -1168,7 +1256,6 @@ router.get('/dashboard/export', authenticate('admin'), async (req, res) => {
             FROM cab_requests
         `);
 
-        // Fetch active drivers details
         const activeDrivers = await pool.query(`
             SELECT id, name, vehicle_type, vehicle_number, phone
             FROM drivers
@@ -1176,19 +1263,15 @@ router.get('/dashboard/export', authenticate('admin'), async (req, res) => {
             ORDER BY name
         `);
 
-        // Fetch pending requests details
         const pendingRequests = await pool.query(`
-            SELECT r.id, r.pickup_location, r.dropoff_location, u.name AS user_name, r.status, r.created_at
+            SELECT r.id, r.pickup_location, r.dropoff_location, COALESCE(u.username, 'Unknown') AS user_name, r.status, r.created_at
             FROM cab_requests r
             LEFT JOIN users u ON r.user_id = u.id
             WHERE r.status = 'PENDING'
             ORDER BY r.created_at DESC
         `);
 
-        // Structure the CSV data
         const csvData = [];
-
-        // Add summary stats
         csvData.push({
             section: 'Summary Stats',
             total_rides: summaryStats.rows[0].total_rides,
@@ -1197,11 +1280,7 @@ router.get('/dashboard/export', authenticate('admin'), async (req, res) => {
             total_drivers: summaryStats.rows[0].total_drivers,
             active_drivers: summaryStats.rows[0].active_drivers
         });
-
-        // Add separator
         csvData.push({ section: '' });
-
-        // Add active drivers header
         csvData.push({
             section: 'Active Drivers',
             id: 'ID',
@@ -1210,8 +1289,6 @@ router.get('/dashboard/export', authenticate('admin'), async (req, res) => {
             vehicle_number: 'Vehicle Number',
             phone: 'Phone'
         });
-
-        // Add active drivers data
         activeDrivers.rows.forEach(driver => {
             csvData.push({
                 section: '',
@@ -1222,11 +1299,7 @@ router.get('/dashboard/export', authenticate('admin'), async (req, res) => {
                 phone: driver.phone
             });
         });
-
-        // Add separator
         csvData.push({ section: '' });
-
-        // Add pending requests header
         csvData.push({
             section: 'Pending Requests',
             id: 'ID',
@@ -1236,21 +1309,18 @@ router.get('/dashboard/export', authenticate('admin'), async (req, res) => {
             status: 'Status',
             created_at: 'Created At'
         });
-
-        // Add pending requests data
         pendingRequests.rows.forEach(request => {
             csvData.push({
                 section: '',
                 id: request.id,
                 pickup_location: request.pickup_location,
                 dropoff_location: request.dropoff_location,
-                user_name: request.user_name || 'N/A',
+                user_name: request.user_name,
                 status: request.status,
                 created_at: request.created_at ? new Date(request.created_at).toISOString() : 'N/A'
             });
         });
 
-        // Define fields for CSV
         const fields = [
             { label: 'Section', value: 'section' },
             { label: 'Total Rides', value: 'total_rides' },
