@@ -30,6 +30,25 @@ router.post('/', authenticate('user'), async (req, res) => {
     }
 });
 
+// // Get user's cab requests
+// router.get('/', authenticate('user'), async (req, res) => {
+//     try {
+//         const userId = req.user.id;
+        
+//         const result = await pool.query(
+//             `SELECT cr.*, 
+//                     d.id as driver_id, 
+//                     d.name as driver_name,
+//                     d.vehicle_type,
+                    
+//                     d.vehicle_number
+//              FROM cab_requests cr
+//              LEFT JOIN drivers d ON cr.driver_id = d.id
+//              WHERE cr.user_id = $1
+//              ORDER BY cr.request_time DESC`,
+//             [userId]
+//         );
+
 // Get user's cab requests
 router.get('/', authenticate('user'), async (req, res) => {
     try {
@@ -39,7 +58,7 @@ router.get('/', authenticate('user'), async (req, res) => {
             `SELECT cr.*, 
                     d.id as driver_id, 
                     d.name as driver_name,
-                    d.vehicle_type,
+                    d.phone,
                     d.vehicle_number
              FROM cab_requests cr
              LEFT JOIN drivers d ON cr.driver_id = d.id
@@ -47,7 +66,6 @@ router.get('/', authenticate('user'), async (req, res) => {
              ORDER BY cr.request_time DESC`,
             [userId]
         );
-
         res.json({
             success: true,
             data: result.rows.map(row => ({
