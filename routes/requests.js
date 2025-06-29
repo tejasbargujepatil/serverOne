@@ -77,7 +77,7 @@ router.get('/', authenticate('user'), async (req, res) => {
                 driver: row.driver_id ? {
                     id: row.driver_id,
                     name: row.driver_name,
-                    vehicle_type: row.vehicle_type,
+                    phone: row.phone,
                     vehicle_number: row.vehicle_number
                 } : null
             }))
