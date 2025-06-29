@@ -1,20 +1,20 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../config/db');
-const { authenticate } = require('../middleware/auth'); // Correct import
+const { authenticate } = require('../middleware/auth');
 
 // Create a new cab request
 router.post('/', authenticate('user'), async (req, res) => {
     try {
-        const { pickupLocation, dropoffLocation, rideType, requestTime } = req.body;
-        const userId = req.user.id; // Get from authenticated user
+        const { pickupLocation, dropoffLocation, requestTime } = req.body;
+        const userId = req.user.id;
 
         const result = await pool.query(
             `INSERT INTO cab_requests 
-             (user_id, pickup_location, dropoff_location, ride_type, request_time, status) 
-             VALUES ($1, $2, $3, $4, $5, 'PENDING') 
+             (user_id, pickup_location, dropoff_location, request_time, status) 
+             VALUES ($1, $2, $3, $4, 'PENDING') 
              RETURNING *`,
-            [userId, pickupLocation, dropoffLocation, rideType, requestTime || new Date()]
+            [userId, pickupLocation, dropoffLocation, requestTime || new Date()]
         );
 
         res.status(201).json({
@@ -30,7 +30,7 @@ router.post('/', authenticate('user'), async (req, res) => {
     }
 });
 
-// Get user's cab requests (updated)
+// Get user's cab requests
 router.get('/', authenticate('user'), async (req, res) => {
     try {
         const userId = req.user.id;
@@ -54,7 +54,6 @@ router.get('/', authenticate('user'), async (req, res) => {
                 id: row.id,
                 pickup_location: row.pickup_location,
                 dropoff_location: row.dropoff_location,
-                ride_type: row.ride_type,
                 request_time: row.request_time,
                 status: row.status,
                 driver: row.driver_id ? {
@@ -74,7 +73,7 @@ router.get('/', authenticate('user'), async (req, res) => {
     }
 });
 
-// Get all requests for admin (new route)
+// Get all requests for admin
 router.get('/all', authenticate('admin'), async (req, res) => {
     try {
         const result = await pool.query(
@@ -100,7 +99,7 @@ router.get('/all', authenticate('admin'), async (req, res) => {
     }
 });
 
-// Assign driver to request (new route)
+// Assign driver to request
 router.put('/:id/assign', authenticate('admin'), async (req, res) => {
     try {
         const { driverId } = req.body;
@@ -139,6 +138,5 @@ router.put('/:id/assign', authenticate('admin'), async (req, res) => {
         });
     }
 });
-
 
 module.exports = router;
