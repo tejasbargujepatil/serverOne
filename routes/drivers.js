@@ -11,7 +11,6 @@ router.use((req, res, next) => {
     next();
 });
 
-// Helper function to verify token
 const verifyToken = (req, res, next) => {
     const token = req.headers.authorization?.split(' ')[1];
     if (!token) {
@@ -28,12 +27,10 @@ const verifyToken = (req, res, next) => {
     }
 };
 
-// DRIVER REGISTRATION ENDPOINT
 router.post('/register', async (req, res) => {
     try {
-        const { name, email, phone, vehicle_type, vehicle_number, password } = req.body;
+        const { name, email, phone, vehicle_type, vehicle_number, password, license_number } = req.body;
 
-        // Validate required fields
         const requiredFields = { name, email, phone, vehicle_type, vehicle_number, password };
         const missingFields = Object.entries(requiredFields)
             .filter(([_, value]) => !value)
@@ -46,7 +43,6 @@ router.post('/register', async (req, res) => {
             });
         }
 
-        // Check if email already exists
         const existingDriver = await pool.query(
             'SELECT id FROM drivers WHERE email = $1', 
             [email]
@@ -59,19 +55,16 @@ router.post('/register', async (req, res) => {
             });
         }
 
-        // Hash password
         const hashedPassword = await bcrypt.hash(password, 10);
 
-        // Create new driver
         const newDriver = await pool.query(
             `INSERT INTO drivers 
-             (name, email, phone, vehicle_type, vehicle_number, password)
-             VALUES ($1, $2, $3, $4, $5, $6)
-             RETURNING id, name, email, phone, vehicle_type, vehicle_number`,
-            [name, email, phone, vehicle_type, vehicle_number, hashedPassword]
+             (name, email, phone, vehicle_type, vehicle_number, password, license_number)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             RETURNING id, name, email, phone, vehicle_type, vehicle_number, license_number, is_online`,
+            [name, email, phone, vehicle_type, vehicle_number, hashedPassword, license_number || 'PENDING']
         );
 
-        // Generate JWT token
         const token = jwt.sign(
             { 
                 id: newDriver.rows[0].id, 
@@ -99,12 +92,10 @@ router.post('/register', async (req, res) => {
     }
 });
 
-// DRIVER LOGIN ENDPOINT
 router.post('/login', async (req, res) => {
     try {
         const { email, password } = req.body;
 
-        // Find driver by email
         const result = await pool.query(
             'SELECT * FROM drivers WHERE email = $1',
             [email]
@@ -118,8 +109,6 @@ router.post('/login', async (req, res) => {
         }
 
         const driver = result.rows[0];
-        
-        // Compare passwords
         const isMatch = await bcrypt.compare(password, driver.password);
 
         if (!isMatch) {
@@ -129,7 +118,6 @@ router.post('/login', async (req, res) => {
             });
         }
 
-        // Generate JWT token
         const token = jwt.sign(
             { 
                 id: driver.id, 
@@ -149,7 +137,9 @@ router.post('/login', async (req, res) => {
                 email: driver.email,
                 phone: driver.phone,
                 vehicle_type: driver.vehicle_type,
-                vehicle_number: driver.vehicle_number
+                vehicle_number: driver.vehicle_number,
+                license_number: driver.license_number,
+                is_online: driver.is_online
             }
         });
 
@@ -163,11 +153,15 @@ router.post('/login', async (req, res) => {
     }
 });
 
-// DRIVER PROFILE ENDPOINT
 router.get('/profile', verifyToken, async (req, res) => {
     try {
         const result = await pool.query(
-            'SELECT id, name, email, phone, vehicle_type, vehicle_number FROM drivers WHERE id = $1',
+            `SELECT 
+                id, name, email, phone, 
+                vehicle_type, vehicle_number, 
+                license_number, is_online,
+                current_latitude, current_longitude
+             FROM drivers WHERE id = $1`,
             [req.driverId]
         );
 
@@ -190,7 +184,74 @@ router.get('/profile', verifyToken, async (req, res) => {
     }
 });
 
-// ASSIGNED REQUESTS ENDPOINT
+router.post('/location', verifyToken, async (req, res) => {
+    try {
+        const { current_latitude, current_longitude, location_accuracy, is_online } = req.body;
+
+        if (current_latitude === undefined || current_longitude === undefined) {
+            return res.status(400).json({
+                success: false,
+                message: 'Latitude and longitude are required'
+            });
+        }
+
+        await pool.query(
+            `UPDATE drivers 
+             SET 
+                current_latitude = $1,
+                current_longitude = $2,
+                location_accuracy = $3,
+                last_location_update = NOW(),
+                is_online = $4,
+                updated_at = NOW()
+             WHERE id = $5`,
+            [current_latitude, current_longitude, location_accuracy, is_online, req.driverId]
+        );
+
+        res.json({
+            success: true,
+            message: 'Location updated successfully'
+        });
+
+    } catch (error) {
+        console.error('Location update error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to update location',
+            error: error.message
+        });
+    }
+});
+
+router.post('/status', verifyToken, async (req, res) => {
+    try {
+        const { is_online } = req.body;
+
+        await pool.query(
+            `UPDATE drivers 
+             SET 
+                is_online = $1,
+                last_seen = NOW(),
+                updated_at = NOW()
+             WHERE id = $2`,
+            [is_online, req.driverId]
+        );
+
+        res.json({
+            success: true,
+            message: 'Status updated successfully'
+        });
+
+    } catch (error) {
+        console.error('Status update error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to update status',
+            error: error.message
+        });
+    }
+});
+
 router.get('/assigned-requests', verifyToken, async (req, res) => {
     try {
         const result = await pool.query(
@@ -203,7 +264,7 @@ router.get('/assigned-requests', verifyToken, async (req, res) => {
                 cr.request_time,
                 cr.fare_amount,
                 u.username AS customer_name,
-                u.phone AS customer_phone,
+                u.phone AS phone,
                 u.email AS customer_email
              FROM cab_requests cr
              JOIN users u ON cr.user_id = u.id
@@ -219,7 +280,6 @@ router.get('/assigned-requests', verifyToken, async (req, res) => {
             [req.driverId]
         );
 
-        // Format the data for better frontend display
         const requests = result.rows.map(request => ({
             ...request,
             formatted_date: new Date(request.request_time || request.created_at).toLocaleString(),
@@ -241,12 +301,10 @@ router.get('/assigned-requests', verifyToken, async (req, res) => {
     }
 });
 
-// COMPLETE REQUEST ENDPOINT
 router.post('/complete-request', verifyToken, async (req, res) => {
     try {
         const { requestId } = req.body;
 
-        // Verify the request exists and belongs to this driver
         const requestCheck = await pool.query(
             `SELECT id, status FROM cab_requests 
              WHERE id = $1 AND driver_id = $2`,
@@ -262,7 +320,6 @@ router.post('/complete-request', verifyToken, async (req, res) => {
 
         const request = requestCheck.rows[0];
 
-        // Check if request is in a completable state
         if (!['accepted', 'in_progress'].includes(request.status)) {
             return res.status(400).json({
                 success: false,
@@ -270,7 +327,6 @@ router.post('/complete-request', verifyToken, async (req, res) => {
             });
         }
 
-        // Update request status
         await pool.query(
             `UPDATE cab_requests 
              SET status = 'completed', 
@@ -295,25 +351,43 @@ router.post('/complete-request', verifyToken, async (req, res) => {
     }
 });
 
-// RECENT REQUESTS ENDPOINT
-router.get('/recent-requests', verifyToken, async (req, res) => {
+router.get('/nearby-requests', verifyToken, async (req, res) => {
     try {
+        const { lat, lng, radius = 5000 } = req.query;
+        
+        if (!lat || !lng) {
+            return res.status(400).json({
+                success: false,
+                message: 'Latitude and longitude are required'
+            });
+        }
+
         const result = await pool.query(
             `SELECT 
-                cr.id, 
-                cr.pickup_location, 
-                cr.dropoff_location, 
+                cr.id,
+                cr.pickup_location,
+                cr.dropoff_location,
                 cr.status,
                 cr.request_time,
-                u.username AS customer_name
+                u.username AS customer_name,
+                u.phone AS customer_phone,
+                ST_Distance(
+                    ST_SetSRID(ST_MakePoint($1, $2), 4326),
+                    ST_SetSRID(ST_MakePoint(cr.pickup_lng, cr.pickup_lat), 4326)
+                ) AS distance
              FROM cab_requests cr
              JOIN users u ON cr.user_id = u.id
-             WHERE cr.status = 'pending' 
-             AND cr.vehicle_type = $1
+             WHERE cr.status = 'pending'
+             AND cr.vehicle_type = $3
              AND cr.driver_id IS NULL
-             ORDER BY cr.created_at DESC
-             LIMIT 10`,
-            [req.vehicleType]
+             AND ST_DWithin(
+                ST_SetSRID(ST_MakePoint($1, $2),
+                ST_SetSRID(ST_MakePoint(cr.pickup_lng, cr.pickup_lat),
+                $4
+             )
+             ORDER BY cr.created_at ASC
+             LIMIT 20`,
+            [lng, lat, req.vehicleType, radius]
         );
 
         res.json({
@@ -322,92 +396,10 @@ router.get('/recent-requests', verifyToken, async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Recent requests error:', error);
+        console.error('Nearby requests error:', error);
         res.status(500).json({
             success: false,
-            message: 'Failed to fetch recent requests',
-            error: error.message
-        });
-    }
-});
-
-// PAST RIDES ENDPOINT
-router.get('/past-rides', verifyToken, async (req, res) => {
-    try {
-        const result = await pool.query(
-            `SELECT 
-                cr.id, 
-                cr.pickup_location, 
-                cr.dropoff_location, 
-                cr.fare_amount,
-                cr.request_time,
-                u.username AS customer_name
-             FROM cab_requests cr
-             JOIN users u ON cr.user_id = u.id
-             WHERE cr.driver_id = $1
-             AND cr.status = 'completed'
-             ORDER BY cr.completed_at DESC
-             LIMIT 10`,
-            [req.driverId]
-        );
-
-        res.json({
-            success: true,
-            rides: result.rows
-        });
-
-    } catch (error) {
-        console.error('Past rides error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to fetch past rides',
-            error: error.message
-        });
-    }
-});
-
-// ACCEPT REQUEST ENDPOINT
-router.post('/accept-request', verifyToken, async (req, res) => {
-    try {
-        const { requestId } = req.body;
-
-        // Check if request exists and is available
-        const requestCheck = await pool.query(
-            `SELECT id FROM cab_requests 
-             WHERE id = $1 
-             AND status = 'pending' 
-             AND driver_id IS NULL`,
-            [requestId]
-        );
-
-        if (requestCheck.rows.length === 0) {
-            return res.status(404).json({
-                success: false,
-                message: 'Request not available or already assigned'
-            });
-        }
-
-        // Assign request to driver
-        await pool.query(
-            `UPDATE cab_requests 
-             SET driver_id = $1, 
-                 status = 'accepted', 
-                 accepted_at = NOW(),
-                 updated_at = NOW()
-             WHERE id = $2`,
-            [req.driverId, requestId]
-        );
-
-        res.json({
-            success: true,
-            message: 'Request accepted successfully'
-        });
-
-    } catch (error) {
-        console.error('Accept request error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to accept request',
+            message: 'Failed to fetch nearby requests',
             error: error.message
         });
     }

@@ -19,24 +19,49 @@ const authMiddleware = (req, res, next) => {
         res.status(401).json({ message: 'Invalid token' });
     }
 };
-
 router.post('/register', async (req, res) => {
-    const { username, email, password } = req.body;
+    const { username, email, password, phone } = req.body;
     try {
-        const userExists = await pool.query('SELECT * FROM users WHERE email = $1', [email]);
-        if (userExists.rows.length > 0) {
-            return res.status(400).json({ message: 'User already exists' });
+        // Validate required fields
+        if (!username || !email || !password) {
+            return res.status(400).json({ message: 'Username, email, and password are required' });
         }
+
+        // Check if user exists by email or username
+        const userExists = await pool.query('SELECT * FROM users WHERE email = $1 OR username = $2', [email, username]);
+        if (userExists.rows.length > 0) {
+            return res.status(400).json({ 
+                message: userExists.rows[0].email === email ? 'Email already exists' : 'Username already exists' 
+            });
+        }
+
+        // Validate phone number (optional, but must match format if provided)
+        if (phone && !/^\+?\d{10,15}$/.test(phone.replace(/[\s-]/g, ''))) {
+            return res.status(400).json({ message: 'Invalid phone number format (must be 10-15 digits, optional + prefix)' });
+        }
+
+        // Hash password
         const hashedPassword = await bcrypt.hash(password, 10);
+
+        // Insert user into database
         const result = await pool.query(
-            'INSERT INTO users (username, email, password) VALUES ($1, $2, $3) RETURNING id',
-            [username, email, hashedPassword]
+            'INSERT INTO users (username, email, password, phone, role) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+            [username, email, hashedPassword, phone || null, 'passenger']
         );
-        res.status(201).json({ message: 'User registered', userId: result.rows[0].id });
+
+        res.status(201).json({ 
+            message: 'User registered successfully', 
+            userId: result.rows[0].id 
+        });
     } catch (error) {
-        res.status(500).json({ message: 'Error registering user', error: error.message });
+        console.error('Error registering user:', error);
+        res.status(500).json({ 
+            message: 'Error registering user', 
+            error: error.message 
+        });
     }
 });
+
 
 router.post('/login', async (req, res) => {
     const { email, password } = req.body;
