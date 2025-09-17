@@ -692,7 +692,7 @@ router.get('/dashboard/export', authenticate('admin'), async (req, res) => {
 // Add these routes after the existing routes in admin.js
 
 // Get pending user registration requests
-router.get('/pending_users', authenticate('admin'), async (req, res) => {
+router.get('/pending-users', authenticate('admin'), async (req, res) => {
     try {
         const result = await pool.query(
             'SELECT * FROM pending_users ORDER BY created_at DESC'
@@ -711,7 +711,7 @@ router.get('/pending_users', authenticate('admin'), async (req, res) => {
 });
 
 // Approve user registration request
-router.post('/pending_users/:id/approve', authenticate('admin'), async (req, res) => {
+router.post('/pending-users/:id/approve', authenticate('admin'), async (req, res) => {
     const { id } = req.params;
     const client = await pool.connect();
     
@@ -771,7 +771,7 @@ router.post('/pending_users/:id/approve', authenticate('admin'), async (req, res
 });
 
 // Reject user registration request
-router.delete('/pending_users/:id', authenticate('admin'), async (req, res) => {
+router.delete('/pending-users/:id', authenticate('admin'), async (req, res) => {
     const { id } = req.params;
     
     try {
@@ -828,6 +828,7 @@ router.delete('/pending_users/:id', authenticate('admin'), async (req, res) => {
 
 
 module.exports = router;
+
 
 
 
