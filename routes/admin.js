@@ -571,6 +571,117 @@ router.put('/settings/system', authenticate('admin'), async (req, res) => {
     }
 });
 
+// ... existing code ...
+
+// Add these routes after the existing routes in admin.js, but BEFORE the dashboard export route
+
+// Get pending user registration requests
+router.get('/pending-users', authenticate('admin'), async (req, res) => {
+    try {
+        const result = await pool.query(
+            'SELECT * FROM pending_users ORDER BY created_at DESC'
+        );
+        res.json({ 
+            data: result.rows, 
+            message: 'Pending users fetched successfully' 
+        });
+    } catch (error) {
+        console.error('Error fetching pending users:', error.stack);
+        res.status(500).json({ 
+            message: 'Error fetching pending users', 
+            error: error.message 
+        });
+    }
+});
+
+// Approve user registration request
+router.post('/pending-users/:id/approve', authenticate('admin'), async (req, res) => {
+    const { id } = req.params;
+    const client = await pool.connect();
+    
+    try {
+        await client.query('BEGIN');
+
+        // Get the pending user
+        const pendingUserResult = await client.query(
+            'SELECT * FROM pending_users WHERE id = $1',
+            [id]
+        );
+        
+        if (pendingUserResult.rows.length === 0) {
+            throw new Error('Pending user not found');
+        }
+        
+        const pendingUser = pendingUserResult.rows[0];
+        
+        // Check if user already exists in users table
+        const userExists = await client.query(
+            'SELECT * FROM users WHERE email = $1 OR username = $2',
+            [pendingUser.email, pendingUser.username]
+        );
+        
+        if (userExists.rows.length > 0) {
+            throw new Error('User already exists in system');
+        }
+        
+        // Insert into users table
+        const insertResult = await client.query(
+            'INSERT INTO users (username, email, password, phone, role) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+            [pendingUser.username, pendingUser.email, pendingUser.password, pendingUser.phone, pendingUser.role || 'passenger']
+        );
+        
+        // Remove from pending_users table
+        await client.query(
+            'DELETE FROM pending_users WHERE id = $1',
+            [id]
+        );
+        
+        await client.query('COMMIT');
+        
+        res.json({ 
+            data: insertResult.rows[0], 
+            message: 'User approved successfully' 
+        });
+    } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('Error approving user:', error.stack);
+        res.status(500).json({ 
+            message: error.message || 'Error approving user', 
+            error: error.message 
+        });
+    } finally {
+        client.release();
+    }
+});
+
+// Reject user registration request
+router.delete('/pending-users/:id', authenticate('admin'), async (req, res) => {
+    const { id } = req.params;
+    
+    try {
+        const result = await pool.query(
+            'DELETE FROM pending_users WHERE id = $1 RETURNING *',
+            [id]
+        );
+        
+        if (result.rows.length === 0) {
+            return res.status(404).json({ message: 'Pending user not found' });
+        }
+        
+        res.json({ 
+            message: 'User registration request rejected successfully' 
+        });
+    } catch (error) {
+        console.error('Error rejecting user:', error.stack);
+        res.status(500).json({ 
+            message: 'Error rejecting user', 
+            error: error.message 
+        });
+    }
+});
+
+
+
 // Export data
 router.get('/requests/export', authenticate('admin'), async (req, res) => {
     try {
@@ -689,112 +800,6 @@ router.get('/dashboard/export', authenticate('admin'), async (req, res) => {
         });
 
 
-// Add these routes after the existing routes in admin.js
-
-// Get pending user registration requests
-router.get('/pending-users', authenticate('admin'), async (req, res) => {
-    try {
-        const result = await pool.query(
-            'SELECT * FROM pending_users ORDER BY created_at DESC'
-        );
-        res.json({ 
-            data: result.rows, 
-            message: 'Pending users fetched successfully' 
-        });
-    } catch (error) {
-        console.error('Error fetching pending users:', error.stack);
-        res.status(500).json({ 
-            message: 'Error fetching pending users', 
-            error: error.message 
-        });
-    }
-});
-
-// Approve user registration request
-router.post('/pending-users/:id/approve', authenticate('admin'), async (req, res) => {
-    const { id } = req.params;
-    const client = await pool.connect();
-    
-    try {
-        await client.query('BEGIN');
-
-        // Get the pending user
-        const pendingUserResult = await client.query(
-            'SELECT * FROM pending_users WHERE id = $1',
-            [id]
-        );
-        
-        if (pendingUserResult.rows.length === 0) {
-            throw new Error('Pending user not found');
-        }
-        
-        const pendingUser = pendingUserResult.rows[0];
-        
-        // Check if user already exists in users table
-        const userExists = await client.query(
-            'SELECT * FROM users WHERE email = $1 OR username = $2',
-            [pendingUser.email, pendingUser.username]
-        );
-        
-        if (userExists.rows.length > 0) {
-            throw new Error('User already exists in system');
-        }
-        
-        // Insert into users table
-        const insertResult = await client.query(
-            'INSERT INTO users (username, email, password, phone, role) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-            [pendingUser.username, pendingUser.email, pendingUser.password, pendingUser.phone, pendingUser.role || 'passenger']
-        );
-        
-        // Remove from pending_users table
-        await client.query(
-            'DELETE FROM pending_users WHERE id = $1',
-            [id]
-        );
-        
-        await client.query('COMMIT');
-        
-        res.json({ 
-            data: insertResult.rows[0], 
-            message: 'User approved successfully' 
-        });
-    } catch (error) {
-        await client.query('ROLLBACK');
-        console.error('Error approving user:', error.stack);
-        res.status(500).json({ 
-            message: error.message || 'Error approving user', 
-            error: error.message 
-        });
-    } finally {
-        client.release();
-    }
-});
-
-// Reject user registration request
-router.delete('/pending-users/:id', authenticate('admin'), async (req, res) => {
-    const { id } = req.params;
-    
-    try {
-        const result = await pool.query(
-            'DELETE FROM pending_users WHERE id = $1 RETURNING *',
-            [id]
-        );
-        
-        if (result.rows.length === 0) {
-            return res.status(404).json({ message: 'Pending user not found' });
-        }
-        
-        res.json({ 
-            message: 'User registration request rejected successfully' 
-        });
-    } catch (error) {
-        console.error('Error rejecting user:', error.stack);
-        res.status(500).json({ 
-            message: 'Error rejecting user', 
-            error: error.message 
-        });
-    }
-});
         const fields = [
             { label: 'Section', value: 'section' },
             { label: 'Total Rides', value: 'total_rides' },
@@ -828,6 +833,7 @@ router.delete('/pending-users/:id', authenticate('admin'), async (req, res) => {
 
 
 module.exports = router;
+
 
 
 
