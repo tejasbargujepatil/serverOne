@@ -689,6 +689,8 @@ router.get('/dashboard/export', authenticate('admin'), async (req, res) => {
         });
 
 
+// Add these routes after the existing routes in admin.js
+
 // Get pending user registration requests
 router.get('/pending-users', authenticate('admin'), async (req, res) => {
     try {
@@ -826,4 +828,5 @@ router.delete('/pending-users/:id', authenticate('admin'), async (req, res) => {
 
 
 module.exports = router;
+
 
