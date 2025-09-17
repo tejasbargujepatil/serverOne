@@ -793,7 +793,6 @@ router.delete('/pending-users/:id', authenticate('admin'), async (req, res) => {
         });
     }
 });
-        
         const fields = [
             { label: 'Section', value: 'section' },
             { label: 'Total Rides', value: 'total_rides' },
@@ -827,3 +826,4 @@ router.delete('/pending-users/:id', authenticate('admin'), async (req, res) => {
 
 
 module.exports = router;
+
