@@ -20,65 +20,141 @@ const authMiddleware = (req, res, next) => {
     }
 };
 
-// NEW: Register user (sends to pending_users table first)
 router.post('/register', async (req, res) => {
     const { username, email, password, phone } = req.body;
     try {
-        // Validate required fields
-        if (!username || !email || !password) {
-            return res.status(400).json({ message: 'Username, email, and password are required' });
+        // Validate required fields (email optional)
+        if (!username || !password) {
+            return res.status(400).json({ message: 'Username and password are required' });
         }
 
-        // Check if user already exists in users table
+        // Check if username already exists
         const userExists = await pool.query(
-            'SELECT * FROM users WHERE email = $1 OR username = $2', 
-            [email, username]
+            'SELECT * FROM users WHERE username = $1',
+            [username]
         );
         if (userExists.rows.length > 0) {
-            return res.status(400).json({ 
-                message: userExists.rows[0].email === email ? 'Email already exists' : 'Username already exists' 
-            });
+            return res.status(400).json({ message: 'Username already exists' });
         }
 
-        // Check if user already has a pending request
-        const pendingExists = await pool.query(
-            'SELECT * FROM pending_users WHERE email = $1 OR username = $2', 
-            [email, username]
+        // If email is provided, check uniqueness in users
+        if (email) {
+            const emailExists = await pool.query(
+                'SELECT * FROM users WHERE email = $1',
+                [email]
+            );
+            if (emailExists.rows.length > 0) {
+                return res.status(400).json({ message: 'Email already exists' });
+            }
+        }
+
+        // Check pending requests
+        const pendingUsernameExists = await pool.query(
+            'SELECT * FROM pending_users WHERE username = $1',
+            [username]
         );
-        if (pendingExists.rows.length > 0) {
-            return res.status(400).json({ 
-                message: 'Registration request already pending admin approval' 
-            });
+        if (pendingUsernameExists.rows.length > 0) {
+            return res.status(400).json({ message: 'Registration request already pending admin approval' });
         }
 
-        // Validate phone number format if provided
+        if (email) {
+            const pendingEmailExists = await pool.query(
+                'SELECT * FROM pending_users WHERE email = $1',
+                [email]
+            );
+            if (pendingEmailExists.rows.length > 0) {
+                return res.status(400).json({ message: 'Registration request already pending admin approval' });
+            }
+        }
+
+        // Validate phone number if provided
         if (phone && !/^\+?\d{10,15}$/.test(phone.replace(/[\s-]/g, ''))) {
-            return res.status(400).json({ 
-                message: 'Invalid phone number format (must be 10-15 digits, optional + prefix)' 
+            return res.status(400).json({
+                message: 'Invalid phone number format (must be 10-15 digits, optional + prefix)'
             });
         }
 
         // Hash password
         const hashedPassword = await bcrypt.hash(password, 10);
 
-        // Insert into pending_users table instead of users table
+        // Insert into pending_users (email can be null)
         const result = await pool.query(
             'INSERT INTO pending_users (username, email, password, phone, role) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-            [username, email, hashedPassword, phone || null, 'passenger']
+            [username, email || null, hashedPassword, phone || null, 'passenger']
         );
 
-        res.status(201).json({ 
-            message: 'Registration request submitted. Waiting for admin approval.', 
-            pendingUserId: result.rows[0].id 
+        res.status(201).json({
+            message: 'Registration request submitted. Waiting for admin approval.',
+            pendingUserId: result.rows[0].id
         });
     } catch (error) {
         console.error('Error creating registration request:', error);
-        res.status(500).json({ 
-            message: 'Error creating registration request', 
-            error: error.message 
+        res.status(500).json({
+            message: 'Error creating registration request',
+            error: error.message
         });
     }
 });
+
+// NEW: Register user (sends to pending_users table first)
+// router.post('/register', async (req, res) => {
+//     const { username, email, password, phone } = req.body;
+//     try {
+//         // Validate required fields
+//         if (!username || !password) {
+//             return res.status(400).json({ message: 'Username, email, and password are required' });
+//         }
+
+//         // Check if user already exists in users table
+//         const userExists = await pool.query(
+//             'SELECT * FROM users WHERE email = $1 OR username = $2', 
+//             [email, username]
+//         );
+//         if (userExists.rows.length > 0) {
+//             return res.status(400).json({ 
+//                 message: userExists.rows[0].email === email ? 'Email already exists' : 'Username already exists' 
+//             });
+//         }
+
+//         // Check if user already has a pending request
+//         const pendingExists = await pool.query(
+//             'SELECT * FROM pending_users WHERE email = $1 OR username = $2', 
+//             [email, username]
+//         );
+//         if (pendingExists.rows.length > 0) {
+//             return res.status(400).json({ 
+//                 message: 'Registration request already pending admin approval' 
+//             });
+//         }
+
+//         // Validate phone number format if provided
+//         if (phone && !/^\+?\d{10,15}$/.test(phone.replace(/[\s-]/g, ''))) {
+//             return res.status(400).json({ 
+//                 message: 'Invalid phone number format (must be 10-15 digits, optional + prefix)' 
+//             });
+//         }
+
+//         // Hash password
+//         const hashedPassword = await bcrypt.hash(password, 10);
+
+//         // Insert into pending_users table instead of users table
+//         const result = await pool.query(
+//             'INSERT INTO pending_users (username, email, password, phone, role) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+//             [username, email, hashedPassword, phone || null, 'passenger']
+//         );
+
+//         res.status(201).json({ 
+//             message: 'Registration request submitted. Waiting for admin approval.', 
+//             pendingUserId: result.rows[0].id 
+//         });
+//     } catch (error) {
+//         console.error('Error creating registration request:', error);
+//         res.status(500).json({ 
+//             message: 'Error creating registration request', 
+//             error: error.message 
+//         });
+//     }
+// });
 
 // Login remains the same (only checks users table, not pending_users)
 router.post('/login', async (req, res) => {
@@ -241,6 +317,7 @@ module.exports = router;
 
 
 // module.exports = router;
+
 
 
 
